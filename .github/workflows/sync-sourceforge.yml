@@ -1,0 +1,63 @@
+name: Sync Release to SourceForge
+
+on:
+  release:
+    types: [published] # Tự động chạy khi bạn Publish một Release mới
+  workflow_dispatch:   # Cho phép bấm nút "Run workflow" thủ công trên GitHub
+
+jobs:
+  upload-to-sourceforge:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # Cấp quyền tải release assets bằng gh CLI
+
+    steps:
+      - name: Setup SSH Key
+        env:
+          SF_KEY: ${{ secrets.SF_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SF_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          # Quét host key của SourceForge FRS
+          ssh-keyscan -H frs.sourceforge.net >> ~/.ssh/known_hosts
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p ./downloads
+          # Nếu chạy từ trigger Release thì tải theo tag, nếu chạy thủ công thì tải release mới nhất
+          TAG="${{ github.event.release.tag_name }}"
+          if [ -n "$TAG" ]; then
+            echo "Đang tải assets của release: $TAG"
+            gh release download "$TAG" --dir ./downloads --clobber
+          else
+            echo "Đang tải assets của release mới nhất (latest)"
+            gh release download --dir ./downloads --clobber
+          fi
+
+      - name: Route and Upload files to SourceForge
+        env:
+          SF_USER: "phuclee95"
+          SF_PROJECT: "androidtv-x86-64"
+        run: |
+          cd ./downloads
+
+          for file in *; do
+            [ -f "$file" ] || continue
+
+            # Lấy chuỗi trước dấu '-' đầu tiên (vd: GTV14-x86_64... -> GTV14)
+            DEST_FOLDER="${file%%-*}"
+
+            if [ -z "$DEST_FOLDER" ] || [ "$DEST_FOLDER" = "$file" ]; then
+              echo "=> Bỏ qua file không chứa tiền tố dấu '-': $file"
+              continue
+            fi
+
+            echo "=> Đang đồng bộ '$file' -> SourceForge: /$DEST_FOLDER/..."
+
+            # --mkpath: Tự động tạo thư mục đích nếu chưa có trên SourceForge
+            # --ignore-existing: Bỏ qua nếu file đã tồn tại trên SourceForge (không upload lại)
+            rsync -avP --mkpath --ignore-existing "$file" "$SF_USER@frs.sourceforge.net:/home/frs/project/$SF_PROJECT/$DEST_FOLDER/"
+          done
